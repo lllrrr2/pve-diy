@@ -662,7 +662,7 @@ cat > $tmpf << 'EOF'
         $res->{thermalstate} = `sensors`;
         $res->{cpusensors} = `cat /proc/cpuinfo | grep MHz && lscpu | grep MHz`;
 
-        $res->{hdd_temperatures} = `for disk in /dev/sd[a-z]; do smartctl -a \$disk; done | grep -E "Device Model|Capacity|Power_On_Hours|Temperature"`;
+        $res->{hdd_temperatures} = `for disk in /dev/sd[a-z]; do if [ -b \$disk ]; then echo "===\$disk==="; smartctl -a \$disk; fi; done | grep -E "===|Device Model|Model Family|User Capacity|Power_On_Hours|Temperature"`;
 		
         my $powermode = `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor && turbostat -S -q -s PkgWatt -i 0.1 -n 1 -c package | grep -v PkgWatt`;
         $res->{cpupower} = $powermode;
@@ -1099,79 +1099,54 @@ cat >> $tmpf << 'EOF'
 		    title: gettext('SATA盘'),
 		    textField: 'hdd_temperatures',
 		    renderer: function(value) {
-		        if (value.length > 0) {
-		           try {
-		           const jsonData = JSON.parse(value);
-		        if (jsonData.standy === true) {
-		           return '休眠中';
-		           }
-		        let output = '';
-		        if (jsonData.model_name) {
-		        output = `<strong>${jsonData.model_name}</strong><br>`;
-		                if (jsonData.temperature?.current !== undefined) {
-		                   output += `温度: <strong>${jsonData.temperature.current}°C</strong>`;
-		                }
-		                if (jsonData.power_on_time?.hours !== undefined) {
-		                   if (output.length > 0) output += ' | ';
-		                   output += `通电: ${jsonData.power_on_time.hours}小时`;
-		                if (jsonData.power_cycle_count) {
-		                   output += `, 次数: ${jsonData.power_cycle_count}`;
-		                   }
-		                }
-		                if (jsonData.smart_status?.passed !== undefined) {
-		                   if (output.length > 0) output += ' | ';
-		                   output += 'SMART: ' + (jsonData.smart_status.passed ? '正常' : '警告!');
-		                }
-		                   return output;
-		                   }
-		                   } catch (e) {
-		                }
-		                let outputs = [];
-		                let devices = value.matchAll(/(\s*(Model|Device Model|Vendor).*:\s*[\s\S]*?\n){1,2}^User.*\[([\s\S]*?)\]\n^\s*9[\s\S]*?\-\s*([\d]+)[\s\S]*?(\n(^19[0,4][\s\S]*?$){1,2}|\s{0}$)/gm);
-		                for (const device of devices) {
-		                let devicemodel = '';
-		                if (device[1].indexOf("Family") !== -1) {
-		                   devicemodel = device[1].replace(/.*Model Family:\s*([\s\S]*?)\n^Device Model:\s*([\s\S]*?)\n/m, '$1 - $2');
-		                } else if (device[1].match(/Vendor/)) {
-		                   devicemodel = device[1].replace(/.*Vendor:\s*([\s\S]*?)\n^.*Model:\s*([\s\S]*?)\n/m, '$1 $2');
-		                } else {
-		                   devicemodel = device[1].replace(/.*(Model|Device Model):\s*([\s\S]*?)\n/m, '$2');
-		                }
-		                let capacity = device[3] ? device[3].replace(/ |,/gm, '') : "未知容量";
-		                let powerOnHours = device[4] || "未知";
-		                let deviceOutput = '';
-		                if (value.indexOf("Min/Max") !== -1) {
-		                   let devicetemps = device[6]?.matchAll(/19[0,4][\s\S]*?\-\s*(\d+)(\s\(Min\/Max\s(\d+)\/(\d+)\)$|\s{0}$)/gm);
-		                   for (const devicetemp of devicetemps || []) {
-		                     deviceOutput = `<strong>${devicemodel}</strong><br>容量: ${capacity} | 已通电: ${powerOnHours}小时 | 温度: <strong>${devicetemp[1]}°C</strong>`;
-		                     outputs.push(deviceOutput);
-		                  }
-		                } else if (value.indexOf("Temperature") !== -1 || value.match(/Airflow_Temperature/)) {
-		                   let devicetemps = device[6]?.matchAll(/19[0,4][\s\S]*?\-\s*(\d+)/gm);
-		                for (const devicetemp of devicetemps || []) {
-		                   deviceOutput = `<strong>${devicemodel}</strong><br>容量: ${capacity} | 已通电: ${powerOnHours}小时 | 温度: <strong>${devicetemp[1]}°C</strong>`;
-		                   outputs.push(deviceOutput);
-		                }
-		                } else {
-		                   if (value.match(/\/dev\/sd[a-z]/)) {
-		                       deviceOutput = `<strong>${devicemodel}</strong><br>容量: ${capacity} | 已通电: ${powerOnHours}小时 | 提示: 设备存在但未报告温度信息`;
-		                       outputs.push(deviceOutput);
-		                   } else {
-		                       deviceOutput = `<strong>${devicemodel}</strong><br>容量: ${capacity} | 已通电: ${powerOnHours}小时 | 提示: 未检测到温度传感器`;
-		                       outputs.push(deviceOutput);
-		                   }
-		                  }
-		                }
-		                if (!outputs.length && value.length > 0) {
-		                   let fallbackDevices = value.matchAll(/(\/dev\/sd[a-z]).*?Model:([\s\S]*?)\n/gm);
-		                   for (const fallbackDevice of fallbackDevices || []) {
-		                     outputs.push(`${fallbackDevice[2].trim()}<br>提示: 设备存在但无法获取完整信息`);
-		                   }
-		                }
-		                return outputs.length ? outputs.join('<br>') : '提示: 检测到硬盘但无法识别详细信息';
-		            } else {
-		                return '提示: 未安装硬盘或已直通硬盘控制器';
+		        if (!value || value.length === 0) {
+		            return '提示: 未安装硬盘或已直通硬盘控制器';
 		        }
+
+		        var diskBlocks = value.split(/===(?=\/dev\/sd)/g);
+		        var outputs = [];
+
+		        for (var i = 0; i < diskBlocks.length; i++) {
+		            var blockText = diskBlocks[i].trim();
+		            if (!blockText) continue;
+
+		            var devMatch = blockText.match(/^\/dev\/(sd[a-z])===/);
+		            var devName = devMatch ? devMatch[1] : 'unknown';
+		            
+		            var model = '';
+		            var capacity = '';
+		            var hours = '';
+		            var temp = '';
+
+		            var lines = blockText.split('\n');
+		            for (var j = 0; j < lines.length; j++) {
+		                var line = lines[j];
+		                if (/Device Model:|Model Family:/i.test(line)) {
+		                    model = line.split(':')[1].trim();
+		                } else if (/User Capacity:/i.test(line)) {
+		                    var capMatch = line.match(/\[([^\]]+)\]/);
+		                    capacity = capMatch ? capMatch[1] : line.split(':')[1].trim();
+		                } else if (/Power_On_Hours/i.test(line)) {
+		                    var hoursMatch = line.trim().match(/(\d+)\s*$/);
+		                    if (hoursMatch) hours = hoursMatch[1];
+		                } else if (/Temperature/i.test(line)) {
+		                    var tempMatch = line.trim().match(/(\d+)\s*$/);
+		                    if (tempMatch) temp = tempMatch[1];
+		                }
+		            }
+
+		            if (!model) model = "未知型号 SATA 盘 (" + devName + ")";
+
+		            var info = "<strong>[" + devName.toUpperCase() + "] " + model + "</strong><br>";
+		            info += "容量: " + (capacity || '未知');
+		            if (hours) info += " | 已通电: " + hours + "小时";
+		            if (temp) info += " | 温度: <strong>" + temp + "°C</strong>";
+		            else info += " | 温度: 未能获取";
+
+		            outputs.push(info);
+		        }
+
+		        return outputs.length ? outputs.join('<br><br>') : '提示: 未能识别到有效SATA硬盘数据';
 		    }
 		},
 
@@ -1333,7 +1308,7 @@ echo -e "${GN}清理和 GRUB 更新完成。${CL}"
 menu(){
 	cat <<-EOF
 
-`TIME y "    PVE优化脚本 - 2025 刀刀优化版    "`
+`TIME y "    PVE9优化脚本 - 2026 刀刀优化版    "`
 ┌──────────────────────────────────────────┐
     1. 一键优化PVE(换源、去订阅等)
     2. 配置PCI硬件直通
